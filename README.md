@@ -64,7 +64,7 @@ The agent graph is controlled by a custom `state_transition` function — a stat
 ## Setup
 
 ```bash
-git clone https://github.com/yourusername/competitive-intel-agent
+git clone https://github.com/princexj/competitive-intel-agent
 cd competitive-intel-agent
 pip install -r requirements.txt
 ```
