@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from graph import compare_targets, result_from_state, stream_target
+from llm import GroqRateLimitError
 from storage import save_run
 
 
@@ -33,19 +34,39 @@ def main() -> None:
         raise SystemExit("Groq and Tavily API keys are required.")
 
     results = []
+    failures = []
     for target in args.targets:
         print(f"\nResearching {target}")
         state = {"topic": target, "errors": []}
-        for node, update in stream_target(target, groq_key, tavily_key):
-            print(f"  [{node}] complete")
-            for key, value in update.items():
-                if key == "errors":
-                    state["errors"].extend(value)
-                else:
-                    state[key] = value
-        results.append(result_from_state(target, state))
+        try:
+            for node, update in stream_target(target, groq_key, tavily_key):
+                print(f"  [{node}] complete")
+                for key, value in update.items():
+                    if key == "errors":
+                        state["errors"].extend(value)
+                    else:
+                        state[key] = value
+            results.append(result_from_state(target, state))
+        except Exception as exc:
+            failures.append((target, str(exc)))
+            print(f"  [failed] {exc}")
+            print("  Continuing so completed reports are preserved.")
 
-    comparison = compare_targets(results, groq_key)
+    if not results:
+        raise SystemExit(
+            "No reports completed. Wait for the Groq quota window to reset, "
+            "then retry with one target."
+        )
+
+    comparison = ""
+    if len(results) > 1:
+        try:
+            comparison = compare_targets(results, groq_key)
+        except GroqRateLimitError as exc:
+            print(f"\nComparison skipped: {exc}")
+        except Exception as exc:
+            print(f"\nComparison failed: {exc}")
+
     sections = []
     if comparison:
         sections.append("# Competitive Landscape\n\n" + comparison)
@@ -53,6 +74,10 @@ def main() -> None:
     Path(args.output).write_text("\n\n---\n\n".join(sections), encoding="utf-8")
     run_id = save_run(results, comparison)
     print(f"\nSaved {args.output} (run {run_id})")
+    if failures:
+        failed_targets = ", ".join(target for target, _ in failures)
+        print(f"Partial run: failed targets: {failed_targets}")
+        print("Retry those targets later after the Groq quota window resets.")
 
 
 if __name__ == "__main__":
