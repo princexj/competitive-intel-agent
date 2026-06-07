@@ -1,68 +1,58 @@
-"""
-main.py — CLI entry point for the Competitive Intelligence Agent.
+"""Command-line entry point for SignalForge."""
 
-Usage:
-    python main.py
+from __future__ import annotations
 
-You will be prompted for:
-    - Your Groq API key (get free at console.groq.com)
-    - Your Tavily API key (get free at tavily.com — 1000 searches/month)
-    - The company/technology/topic to research
-
-The final report is saved as a .md file in the current directory.
-"""
-
+import argparse
+import getpass
 import os
-from agents import build_agent_graph
+from pathlib import Path
+
+from graph import compare_targets, result_from_state, stream_target
+from storage import save_run
 
 
-def main():
-    print("\n" + "="*60)
-    print("   COMPETITIVE INTELLIGENCE AGENT")
-    print("   Multi-Agent Research Pipeline")
-    print("="*60 + "\n")
-
-    # ── API Keys (BYOK pattern — never stored) ───────────────────
-    groq_key = input("Enter your Groq API key: ").strip()
-    if not groq_key:
-        print("Error: Groq API key is required.")
-        return
-
-    tavily_key = input("Enter your Tavily API key (or press Enter to skip web search): ").strip()
-    if not tavily_key:
-        print("Warning: No Tavily key — web/news search will be disabled.\n")
-
-    # ── Research Topic ───────────────────────────────────────────
-    topic = input("\nWhat company or technology do you want to research?\n> ").strip()
-    if not topic:
-        print("Error: Topic cannot be empty.")
-        return
-
-    print(f"\n[Starting pipeline for: '{topic}']\n")
-    print("Agent graph: Planner → News Researcher → Paper Researcher → Critic → Synthesizer → Reporter\n")
-    print("-"*60 + "\n")
-
-    # ── Build and run the agent graph ────────────────────────────
-    user_proxy, manager, groupchat = build_agent_graph(groq_key, tavily_key)
-
-    user_proxy.initiate_chat(
-        manager,
-        message=f"Research topic: {topic}"
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate evidence-backed competitive intelligence."
     )
+    parser.add_argument("targets", nargs="+", help="One to four research targets.")
+    parser.add_argument("--groq-key", default=os.getenv("GROQ_API_KEY", ""))
+    parser.add_argument("--tavily-key", default=os.getenv("TAVILY_API_KEY", ""))
+    parser.add_argument("--output", default="competitive_intelligence.md")
+    return parser.parse_args()
 
-    # ── Save report ───────────────────────────────────────────────
-    safe_name = "".join(c if c.isalnum() else "_" for c in topic)[:30]
-    filename = f"{safe_name}_intel_report.md"
 
-    with open(filename, "w", encoding="utf-8") as f:
-        for msg in groupchat.messages:
-            agent_name = msg.get("name", "")
-            content = msg.get("content") or ""
-            if agent_name == "Reporter" and content:
-                clean = content.replace("TERMINATE", "").strip()
-                f.write(clean)
+def main() -> None:
+    args = parse_args()
+    if len(args.targets) > 4:
+        raise SystemExit("Choose at most four targets.")
 
-    print(f"\n[✓] Report saved to: {filename}")
+    groq_key = args.groq_key or getpass.getpass("Groq API key: ")
+    tavily_key = args.tavily_key or getpass.getpass("Tavily API key: ")
+    if not groq_key or not tavily_key:
+        raise SystemExit("Groq and Tavily API keys are required.")
+
+    results = []
+    for target in args.targets:
+        print(f"\nResearching {target}")
+        state = {"topic": target, "errors": []}
+        for node, update in stream_target(target, groq_key, tavily_key):
+            print(f"  [{node}] complete")
+            for key, value in update.items():
+                if key == "errors":
+                    state["errors"].extend(value)
+                else:
+                    state[key] = value
+        results.append(result_from_state(target, state))
+
+    comparison = compare_targets(results, groq_key)
+    sections = []
+    if comparison:
+        sections.append("# Competitive Landscape\n\n" + comparison)
+    sections.extend(result["report"] for result in results)
+    Path(args.output).write_text("\n\n---\n\n".join(sections), encoding="utf-8")
+    run_id = save_run(results, comparison)
+    print(f"\nSaved {args.output} (run {run_id})")
 
 
 if __name__ == "__main__":

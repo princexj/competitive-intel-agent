@@ -1,20 +1,11 @@
+"""Environment-backed defaults shared by local entry points."""
+
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def get_llm_config(api_key: str) -> dict:
-    """
-    Returns the LLM config for AutoGen agents.
-    Uses the user-provided Groq API key (BYOK pattern).
-    """
-    return {
-        "config_list": [{
-            "model": "llama-3.3-70b-versatile",
-            "api_key": api_key,
-            "base_url": "https://api.groq.com/openai/v1"
-        }],
-        "temperature": 0.5,
-    }
-
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+DEFAULT_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")

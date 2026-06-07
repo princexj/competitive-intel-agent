@@ -1,0 +1,8 @@
+.cache/
+cache.json
+__pycache__/
+*.py[cod]
+.env
+.streamlit/secrets.toml
+*_intel_report.md
+.pytest_cache/

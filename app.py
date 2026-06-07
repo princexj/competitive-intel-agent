@@ -1,389 +1,329 @@
-"""
-app.py — Streamlit UI for the Competitive Intelligence Agent.
+"""Streamlit product UI for the competitive intelligence workflow."""
 
-Run with:
-    streamlit run app.py
+from __future__ import annotations
 
-BYOK (Bring Your Own Key) pattern:
-- User enters their Groq + Tavily API keys in the sidebar
-- Keys stored in st.session_state only — never saved to disk
-- Session ends → keys gone
-"""
+import json
+import os
+import re
+from html import escape
 
 import streamlit as st
-import time
-import os
-from agents import build_agent_graph
 
-# ── Page Config ─────────────────────────────────────────────────────────────
+from graph import compare_targets, result_from_state, stream_target
+from storage import get_run, list_runs, save_run
 
 st.set_page_config(
-    page_title="Intel Agent",
-    page_icon="🔍",
+    page_title="SignalForge Intelligence",
+    page_icon="S",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ───────────────────────────────────────────────────────────────
-
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@300;400;600;700&display=swap');
-
+st.markdown(
+    """
+    <style>
     :root {
-        --bg: #0a0a0f;
-        --surface: #12121a;
-        --border: #1e1e2e;
-        --accent: #7c3aed;
-        --accent-light: #a78bfa;
-        --green: #10b981;
-        --text: #e2e8f0;
-        --muted: #64748b;
+        --ink: #e8edf5;
+        --muted: #8490a6;
+        --panel: #111827;
+        --line: #243047;
+        --accent: #5eead4;
+        --hot: #fb7185;
     }
-
-    .stApp {
-        background: var(--bg);
-        font-family: 'Space Grotesk', sans-serif;
-        color: var(--text);
-    }
-
-    .stSidebar {
-        background: var(--surface) !important;
-        border-right: 1px solid var(--border);
-    }
-
-    /* Header */
-    .intel-header {
-        text-align: center;
-        padding: 2rem 0 1rem;
-        border-bottom: 1px solid var(--border);
-        margin-bottom: 2rem;
-    }
-
-    .intel-header h1 {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 2rem;
-        font-weight: 600;
-        color: var(--accent-light);
-        letter-spacing: -0.02em;
-        margin: 0;
-    }
-
-    .intel-header p {
-        color: var(--muted);
-        font-size: 0.9rem;
-        margin-top: 0.5rem;
-        font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* Agent pipeline visual */
-    .pipeline {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.3rem;
-        padding: 1rem;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        margin-bottom: 1.5rem;
-        flex-wrap: wrap;
-    }
-
-    .agent-node {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 0.7rem;
-        padding: 0.3rem 0.6rem;
-        border-radius: 4px;
-        border: 1px solid var(--border);
-        color: var(--muted);
-        background: var(--bg);
-    }
-
-    .agent-node.active {
-        border-color: var(--accent);
-        color: var(--accent-light);
-        background: rgba(124, 58, 237, 0.1);
-    }
-
-    .arrow {
-        color: var(--muted);
-        font-size: 0.7rem;
-    }
-
-    /* Status log */
-    .log-container {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1rem;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 0.78rem;
-        max-height: 200px;
-        overflow-y: auto;
+    .stApp { background: #080d17; color: var(--ink); }
+    [data-testid="stSidebar"] { background: #0d1422; border-right: 1px solid var(--line); }
+    .hero {
+        padding: 2rem 0 1.4rem;
+        border-bottom: 1px solid var(--line);
         margin-bottom: 1.5rem;
     }
-
-    .log-entry {
-        padding: 0.2rem 0;
-        color: var(--muted);
-        border-bottom: 1px solid rgba(30, 30, 46, 0.5);
-    }
-
-    .log-entry.success { color: var(--green); }
-    .log-entry.active { color: var(--accent-light); }
-
-    /* Report output */
-    .report-container {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 2rem;
-    }
-
-    /* Sidebar styling */
-    .key-section {
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 0.8rem;
-        margin-bottom: 1rem;
-    }
-
-    .key-label {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 0.7rem;
-        color: var(--muted);
-        margin-bottom: 0.3rem;
+    .eyebrow {
+        color: var(--accent);
+        font: 600 .72rem ui-monospace, monospace;
+        letter-spacing: .16em;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
     }
-
-    /* Streamlit overrides */
-    .stTextInput > div > div > input {
-        background: var(--bg) !important;
-        border: 1px solid var(--border) !important;
-        color: var(--text) !important;
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 0.85rem !important;
-        border-radius: 6px !important;
+    .hero h1 {
+        color: var(--ink);
+        font-size: clamp(2.2rem, 5vw, 4.5rem);
+        letter-spacing: -.055em;
+        line-height: .95;
+        margin: .5rem 0 .8rem;
     }
-
-    .stButton > button {
-        background: var(--accent) !important;
-        color: white !important;
-        border: none !important;
-        font-family: 'Space Grotesk', sans-serif !important;
-        font-weight: 600 !important;
-        font-size: 0.95rem !important;
-        padding: 0.6rem 2rem !important;
-        border-radius: 6px !important;
-        width: 100%;
-        transition: all 0.2s;
+    .hero p { color: var(--muted); max-width: 700px; font-size: 1.05rem; }
+    .metric-card {
+        background: linear-gradient(145deg, #121b2c, #0d1422);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem;
+        min-height: 112px;
     }
-
-    .stButton > button:hover {
-        background: #6d28d9 !important;
-        transform: translateY(-1px);
+    .metric-label {
+        color: var(--muted);
+        font: 600 .68rem ui-monospace, monospace;
+        letter-spacing: .1em;
+        text-transform: uppercase;
     }
-
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        color: var(--accent-light);
-        font-family: 'Space Grotesk', sans-serif;
+    .metric-value { color: var(--accent); font-size: 1.7rem; font-weight: 700; }
+    .source-row {
+        border-left: 2px solid var(--line);
+        padding: .25rem 0 .25rem .8rem;
+        margin: .55rem 0;
+        color: var(--muted);
     }
+    .stButton > button, .stDownloadButton > button { border-radius: 8px; }
+    div[data-testid="stStatusWidget"] { border-color: var(--line); }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    /* Download button */
-    .stDownloadButton > button {
-        background: transparent !important;
-        border: 1px solid var(--accent) !important;
-        color: var(--accent-light) !important;
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 0.8rem !important;
-        width: auto !important;
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+STAGE_LABELS = {
+    "planner": "Research plan created",
+    "news_researcher": "Market and news signals collected",
+    "paper_researcher": "Academic evidence collected",
+    "community_researcher": "Practitioner signals collected",
+    "analyst": "Evidence scored and synthesized",
+    "reporter": "Intelligence brief written",
+}
+
+
+def initialize_state() -> None:
+    defaults = {
+        "results": [],
+        "comparison": "",
+        "run_id": "",
+        "loaded_targets": "",
     }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-    div[data-testid="stSidebarContent"] {
-        padding: 1.5rem 1rem;
-    }
-</style>
-""", unsafe_allow_html=True)
 
-# ── Session State Init ───────────────────────────────────────────────────────
+def parse_targets(raw: str) -> list[str]:
+    targets = [part.strip() for part in re.split(r"[,\n]", raw) if part.strip()]
+    return list(dict.fromkeys(targets))
 
-if "report" not in st.session_state:
-    st.session_state.report = None
-if "logs" not in st.session_state:
-    st.session_state.logs = []
-if "running" not in st.session_state:
-    st.session_state.running = False
 
-# ── Sidebar — API Keys ───────────────────────────────────────────────────────
+def markdown_export(results: list[dict], comparison: str) -> str:
+    sections = []
+    if comparison:
+        sections.append("# Competitive Landscape\n\n" + comparison)
+    for result in results:
+        sections.append(result["report"])
+    return "\n\n---\n\n".join(sections)
+
+
+def load_saved_run(run_id: str) -> None:
+    saved = get_run(run_id)
+    if saved:
+        st.session_state.results = saved["results"]
+        st.session_state.comparison = saved["comparison"]
+        st.session_state.run_id = saved["id"]
+        st.session_state.loaded_targets = ", ".join(saved["targets"])
+
+
+def score_cards(analysis: dict) -> None:
+    scores = analysis.get("scores", {})
+    labels = [
+        ("Momentum", scores.get("momentum", "N/A")),
+        ("Technical strength", scores.get("technical_strength", "N/A")),
+        ("Community interest", scores.get("community_interest", "N/A")),
+        ("Opportunity", scores.get("opportunity", "N/A")),
+    ]
+    columns = st.columns(4)
+    for column, (label, value) in zip(columns, labels):
+        with column:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{escape(str(value))}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+
+initialize_state()
 
 with st.sidebar:
-    st.markdown("### 🔑 API Keys")
-    st.caption("Keys are stored in session memory only — never saved to disk.")
-
+    st.markdown("## SignalForge")
+    st.caption("Evidence-backed competitive intelligence")
     groq_key = st.text_input(
-        "Groq API Key",
+        "Groq API key",
+        value=os.getenv("GROQ_API_KEY", ""),
         type="password",
-        placeholder="gsk_...",
-        help="Free at console.groq.com"
+        help="Used only for this session.",
     )
-
     tavily_key = st.text_input(
-        "Tavily API Key",
+        "Tavily API key",
+        value=os.getenv("TAVILY_API_KEY", ""),
         type="password",
-        placeholder="tvly-...",
-        help="Free at tavily.com — 1000 searches/month"
+        help="Required for live market and community research.",
     )
+    model = st.selectbox("Model", [DEFAULT_MODEL], index=0)
 
     st.divider()
-    st.markdown("### 📡 Agent Pipeline")
-    st.markdown("""
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: #64748b; line-height: 1.8;">
-    1. Planner<br>
-    ↓ breaks topic into 3 angles<br>
-    2. News Researcher<br>
-    ↓ Tavily web search<br>
-    3. Paper Researcher<br>
-    ↓ arXiv + Semantic Scholar<br>
-    4. Critic<br>
-    ↓ scores & filters (≥6/10)<br>
-    5. Synthesizer<br>
-    ↓ cross-source insights<br>
-    6. Reporter<br>
-    ↓ final brief
+    st.markdown("### Workflow")
+    st.caption(
+        "Plan -> parallel market, research, and community collection -> "
+        "evidence analysis -> cited report"
+    )
+
+    history = list_runs()
+    if history:
+        st.divider()
+        st.markdown("### Recent runs")
+        for item in history[:8]:
+            label = " vs ".join(item["targets"])[:34]
+            if st.button(label, key=f"history_{item['id']}", use_container_width=True):
+                load_saved_run(item["id"])
+                st.rerun()
+
+st.markdown(
+    """
+    <div class="hero">
+      <div class="eyebrow">Competitive Intelligence Workbench</div>
+      <h1>Know the field.<br>Choose the move.</h1>
+      <p>Research one company or compare up to four. SignalForge triangulates live
+      market activity, technical research, and practitioner sentiment into a cited
+      strategic brief.</p>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-    st.divider()
-    st.caption("Built with AutoGen · Groq · arXiv · Semantic Scholar · Tavily")
-
-# ── Main UI ──────────────────────────────────────────────────────────────────
-
-st.markdown("""
-<div class="intel-header">
-    <h1>// INTEL AGENT</h1>
-    <p>competitive intelligence · multi-agent pipeline · real-time research</p>
-</div>
-""", unsafe_allow_html=True)
-
-# Topic input
-col1, col2 = st.columns([4, 1])
-with col1:
-    topic = st.text_input(
-        "Research Target",
-        placeholder="e.g. Anthropic, RAG vs Fine-tuning, Mistral AI, LangChain...",
-        label_visibility="collapsed"
+targets_raw = st.text_area(
+    "Research targets",
+    value=st.session_state.loaded_targets,
+    placeholder="Anthropic, OpenAI, Mistral AI",
+    help="Separate targets with commas or new lines. Maximum four.",
+    height=92,
+)
+depth_col, action_col = st.columns([3, 1])
+with depth_col:
+    st.caption("One target creates a deep brief. Two or more also create a comparison.")
+with action_col:
+    run_clicked = st.button(
+        "Run intelligence scan", type="primary", use_container_width=True
     )
-with col2:
-    run_btn = st.button("▶ RUN", disabled=st.session_state.running)
 
-# Pipeline visualization
-st.markdown("""
-<div class="pipeline">
-    <span class="agent-node">Planner</span>
-    <span class="arrow">→</span>
-    <span class="agent-node">News Researcher</span>
-    <span class="arrow">→</span>
-    <span class="agent-node">Paper Researcher</span>
-    <span class="arrow">→</span>
-    <span class="agent-node">Critic</span>
-    <span class="arrow">→</span>
-    <span class="agent-node">Synthesizer</span>
-    <span class="arrow">→</span>
-    <span class="agent-node">Reporter</span>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Run Pipeline ─────────────────────────────────────────────────────────────
-
-if run_btn and topic:
+if run_clicked:
+    targets = parse_targets(targets_raw)
     if not groq_key:
-        st.error("Groq API key is required. Add it in the sidebar.")
+        st.error("Add a Groq API key in the sidebar.")
+    elif not tavily_key:
+        st.error("Add a Tavily API key for live market and community evidence.")
+    elif not targets:
+        st.error("Enter at least one research target.")
+    elif len(targets) > 4:
+        st.error("Choose at most four targets per comparison.")
     else:
-        st.session_state.running = True
-        st.session_state.report = None
-        st.session_state.logs = []
+        st.session_state.results = []
+        st.session_state.comparison = ""
+        st.session_state.run_id = ""
+        st.session_state.loaded_targets = ", ".join(targets)
 
-        log_placeholder = st.empty()
-        status_placeholder = st.empty()
+        overall = st.progress(0, text="Starting intelligence workflow...")
+        run_failed = False
+        for target_index, target in enumerate(targets):
+            aggregate = {"topic": target, "errors": []}
+            with st.status(f"Researching {target}", expanded=True) as status:
+                try:
+                    for node, update in stream_target(
+                        target, groq_key, tavily_key, model=model
+                    ):
+                        for key, value in update.items():
+                            if key == "errors":
+                                aggregate["errors"].extend(value)
+                            else:
+                                aggregate[key] = value
+                        st.write(f"Done: {STAGE_LABELS.get(node, node)}")
+                        progress = (
+                            target_index + (list(STAGE_LABELS).index(node) + 1) / 6
+                        ) / len(targets)
+                        overall.progress(
+                            min(progress, 1.0),
+                            text=f"{target}: {STAGE_LABELS.get(node, node)}",
+                        )
+                    status.update(label=f"{target} complete", state="complete")
+                except Exception as exc:
+                    run_failed = True
+                    status.update(label=f"{target} failed", state="error")
+                    st.error(f"{target}: {exc}")
+                    break
+            st.session_state.results.append(result_from_state(target, aggregate))
+            if aggregate["errors"]:
+                st.warning(" ".join(aggregate["errors"]))
 
-        def add_log(msg, level="active"):
-            st.session_state.logs.append((msg, level))
-
-        with st.spinner(f"Running intelligence pipeline for: **{topic}**"):
+        if not run_failed and len(st.session_state.results) > 1:
+            overall.progress(0.95, text="Building cross-target comparison...")
             try:
-                add_log(f"[00:00] Pipeline initialized for: {topic}")
-                add_log(f"[00:01] Building agent graph...")
-
-                user_proxy, manager, groupchat = build_agent_graph(groq_key, tavily_key or "")
-
-                add_log(f"[00:02] Planner generating research angles...")
-                add_log(f"[00:03] News Researcher querying web...")
-                add_log(f"[00:04] Paper Researcher querying arXiv + Semantic Scholar...")
-                add_log(f"[00:05] Critic filtering and scoring results...")
-                add_log(f"[00:06] Synthesizer cross-referencing sources...")
-                add_log(f"[00:07] Reporter compiling final brief...")
-
-                user_proxy.initiate_chat(
-                    manager,
-                    message=f"Research topic: {topic}"
+                st.session_state.comparison = compare_targets(
+                    st.session_state.results, groq_key, model=model
                 )
+            except Exception as exc:
+                run_failed = True
+                st.error(f"Comparison failed: {exc}")
+        if not run_failed:
+            st.session_state.run_id = save_run(
+                st.session_state.results, st.session_state.comparison
+            )
+            overall.progress(1.0, text="Intelligence scan complete")
+            st.rerun()
 
-                # Extract report from groupchat messages
-                report_content = ""
-                for msg in groupchat.messages:
-                    if msg.get("name") == "Reporter" and msg.get("content"):
-                        report_content = msg["content"].replace("TERMINATE", "").strip()
-                        break
+results = st.session_state.results
+comparison = st.session_state.comparison
 
-                if report_content:
-                    st.session_state.report = report_content
-                    add_log(f"[✓] Pipeline complete. Report generated.", "success")
-                else:
-                    add_log(f"[!] Pipeline finished but no report was generated.", "active")
-
-            except Exception as e:
-                st.error(f"Pipeline error: {str(e)}")
-                add_log(f"[✗] Error: {str(e)}", "active")
-
-        st.session_state.running = False
-        st.rerun()
-
-# ── Display Logs ─────────────────────────────────────────────────────────────
-
-if st.session_state.logs:
-    log_html = '<div class="log-container">'
-    for entry, level in st.session_state.logs:
-        log_html += f'<div class="log-entry {level}">{entry}</div>'
-    log_html += '</div>'
-    st.markdown(log_html, unsafe_allow_html=True)
-
-# ── Display Report ───────────────────────────────────────────────────────────
-
-if st.session_state.report:
-    col1, col2 = st.columns([5, 1])
-    with col1:
-        st.markdown("### Intelligence Brief")
-    with col2:
+if results:
+    header_col, md_col, json_col = st.columns([4, 1, 1])
+    with header_col:
+        st.markdown(
+            f"### Intelligence output "
+            f"`{st.session_state.run_id or 'unsaved'}`"
+        )
+    export_markdown = markdown_export(results, comparison)
+    with md_col:
         st.download_button(
-            "⬇ Download .md",
-            data=st.session_state.report,
-            file_name=f"intel_{topic.replace(' ', '_')[:20]}.md",
-            mime="text/markdown"
+            "Markdown",
+            export_markdown,
+            file_name="competitive_intelligence.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    with json_col:
+        st.download_button(
+            "JSON",
+            json.dumps(
+                {"comparison": comparison, "results": results}, indent=2
+            ),
+            file_name="competitive_intelligence.json",
+            mime="application/json",
+            use_container_width=True,
         )
 
-    st.markdown('<div class="report-container">', unsafe_allow_html=True)
-    st.markdown(st.session_state.report)
-    st.markdown('</div>', unsafe_allow_html=True)
+    tabs = st.tabs(
+        (["Comparison"] if comparison else [])
+        + [result["topic"] for result in results]
+    )
+    tab_index = 0
+    if comparison:
+        with tabs[0]:
+            st.markdown(comparison)
+        tab_index = 1
 
-elif not st.session_state.running:
-    st.markdown("""
-    <div style="text-align: center; padding: 4rem 2rem; color: #64748b; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-        Enter a company, technology, or topic above and hit RUN.<br><br>
-        <span style="font-size: 0.75rem; opacity: 0.6;">
-        Examples: "Anthropic" · "RAG pipelines" · "Mistral vs Llama" · "LangChain" · "OpenAI Sora"
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
+    for result, tab in zip(results, tabs[tab_index:]):
+        with tab:
+            score_cards(result["analysis"])
+            st.markdown(result["report"])
+            with st.expander(f"Evidence ledger ({len(result['sources'])} sources)"):
+                for source in result["sources"]:
+                    st.markdown(
+                        f"**[{source['category'].upper()}] "
+                        f"[{source['title']}]({source['url']})**  \n"
+                        f"{source['source']} | {source['published'] or 'Date unavailable'}"
+                    )
+                    st.caption(source["snippet"])
+else:
+    st.info(
+        "Start with a company, product, or technology. For example: "
+        "`Anthropic, OpenAI, Mistral AI`."
+    )
