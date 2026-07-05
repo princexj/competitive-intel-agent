@@ -124,6 +124,19 @@ No server-side key storage, no security risk, no rate limit sharing across users
 ...
 ```
 
+## v2 — LangGraph Upgrade
+
+After building this AutoGen version, I rebuilt the pipeline using **LangGraph** to address two limitations:
+
+1. **Text-based routing is fragile** — the `state_transition` function works, but it parses message content for tags like `[NEWS DATA]`. A malformed LLM response can break the flow. LangGraph uses typed Python `TypedDict` state and compile-time edge validation, making routing fully deterministic.
+2. **True parallelism** — in this v1, news and paper research run sequentially. LangGraph runs them as genuine parallel graph branches with a synchronisation barrier before the analyst.
+
+The v2 branch (`v2-langgraph`) replaces AutoGen GroupChat with a LangGraph `StateGraph`, the MD5 string cache with SHA-256 structured source dicts, and the Critic+Synthesizer pair with a single typed analyst node that outputs scored JSON directly.
+
+Both versions run the same 3 APIs (Tavily, arXiv, Semantic Scholar) and the same Streamlit BYOK UI.
+
+**→ [v2-langgraph branch](../../tree/v2-langgraph)**
+
 ## License
 
 MIT
